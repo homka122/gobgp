@@ -1353,6 +1353,14 @@ func (lhs *Path) Equal(rhs *Path) bool {
 	if lhsNlri == nil || rhsNlri == nil {
 		return lhsNlri == nil && rhsNlri == nil
 	}
+	// An IPAddrPrefix has nothing outside the route key, so its prefixes are
+	// compared without the allocations of Serialize. Equal prefixes always
+	// serialize to the same bytes, so this never hides a change.
+	if l, ok := lhsNlri.(*bgp.IPAddrPrefix); ok {
+		if r, ok := rhsNlri.(*bgp.IPAddrPrefix); ok {
+			return l.Prefix == r.Prefix
+		}
+	}
 	lhsNlriBytes, _ := lhsNlri.Serialize()
 	rhsNlriBytes, _ := rhsNlri.Serialize()
 	return bytes.Equal(lhsNlriBytes, rhsNlriBytes)
