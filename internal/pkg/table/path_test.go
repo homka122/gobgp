@@ -592,6 +592,18 @@ func TestPathEqual(t *testing.T) {
 		assert.False(t, ipv4Path(t, nh1).Equal(ipv4Path(t, nh2)))
 	})
 
+	t.Run("IP prefix differs", func(t *testing.T) {
+		attrs := ipv4Path(t, nh1).GetPathAttrs()
+		newPath := func(prefix string) *Path {
+			nlri, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix(prefix))
+			return NewPath(bgp.RF_IPv4_UC, nil, bgp.PathNLRI{NLRI: nlri}, false, attrs, time.Now(), false)
+		}
+		lhs := newPath("10.20.30.0/24")
+		rhs := newPath("10.20.31.0/24")
+		assert.Equal(t, lhs.GetHash(), rhs.GetHash())
+		assert.False(t, lhs.Equal(rhs))
+	})
+
 	t.Run("MP_REACH nexthop differs", func(t *testing.T) {
 		lhs := mupT1stPath(t, teid1, nh1)
 		rhs := mupT1stPath(t, teid1, nh2)
@@ -656,6 +668,42 @@ func TestPathEqual(t *testing.T) {
 		rhs.SetHash(attrsHashLikeEagerSites(rhs))
 		assert.Equal(t, lhs.GetHash(), rhs.GetHash())
 		assert.False(t, lhs.Equal(rhs))
+	})
+}
+
+// Equal compares IP prefixes with ipPrefixBytes instead of serializing them,
+// so the two must agree, also for a prefix with bits set past its length.
+func FuzzIPPrefixBytes(f *testing.F) {
+	for _, c := range [][2]string{
+		{"10.0.0.0/24", "10.0.0.0/24"},
+		{"10.0.0.0/24", "10.0.1.0/24"},
+		{"10.0.0.0/24", "10.0.0.0/25"},
+		{"10.0.0.1/24", "10.0.0.2/24"}, // differ past the last octet
+		{"1.1.0.0/3", "3.3.1.1/3"},     // differ in the last octet, past the length
+		{"0.0.0.0/0", "::/0"},
+		{"10.0.0.0/32", "::ffff:10.0.0.0/128"},
+		{"2001:db8::/64", "2001:db8::/64"},
+		{"2001:db8::/64", "2001:db8:0:1::/64"},
+	} {
+		lhs, rhs := netip.MustParsePrefix(c[0]), netip.MustParsePrefix(c[1])
+		f.Add(lhs.Addr().AsSlice(), uint8(lhs.Bits()), rhs.Addr().AsSlice(), uint8(rhs.Bits()))
+	}
+	f.Add([]byte(nil), uint8(0), []byte{0, 0, 0, 0}, uint8(0)) // invalid prefix
+
+	prefix := func(addr []byte, bits uint8) netip.Prefix {
+		a, _ := netip.AddrFromSlice(addr)
+		return netip.PrefixFrom(a, int(bits))
+	}
+	serialize := func(p netip.Prefix) []byte {
+		b, _ := (&bgp.IPAddrPrefix{IPAddrPrefixDefault: bgp.IPAddrPrefixDefault{Prefix: p}}).Serialize()
+		return b
+	}
+	f.Fuzz(func(t *testing.T, lhsAddr []byte, lhsBits uint8, rhsAddr []byte, rhsBits uint8) {
+		lhs, rhs := prefix(lhsAddr, lhsBits), prefix(rhsAddr, rhsBits)
+		want := bytes.Equal(serialize(lhs), serialize(rhs))
+		if got := ipPrefixBytes(lhs) == ipPrefixBytes(rhs); got != want {
+			t.Errorf("%s %s: got %v, want %v", lhs, rhs, got, want)
+		}
 	})
 }
 
