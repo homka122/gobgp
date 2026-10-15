@@ -596,6 +596,18 @@ func TestPathEqual(t *testing.T) {
 		assert.False(t, ipv4Path(t, nh1).Equal(ipv4Path(t, nh2)))
 	})
 
+	t.Run("IP prefix differs", func(t *testing.T) {
+		attrs := ipv4Path(t, nh1).GetPathAttrs()
+		newPath := func(prefix string) *Path {
+			nlri, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix(prefix))
+			return NewPath(bgp.RF_IPv4_UC, nil, bgp.PathNLRI{NLRI: nlri}, false, attrs, time.Now(), false)
+		}
+		lhs := newPath("10.20.30.0/24")
+		rhs := newPath("10.20.31.0/24")
+		assert.Equal(t, lhs.GetHash(), rhs.GetHash())
+		assert.False(t, lhs.Equal(rhs))
+	})
+
 	t.Run("MP_REACH nexthop differs", func(t *testing.T) {
 		lhs := mupT1stPath(t, teid1, nh1)
 		rhs := mupT1stPath(t, teid1, nh2)
@@ -660,6 +672,42 @@ func TestPathEqual(t *testing.T) {
 		rhs.SetHash(attrsHashLikeEagerSites(rhs))
 		assert.Equal(t, lhs.GetHash(), rhs.GetHash())
 		assert.False(t, lhs.Equal(rhs))
+	})
+}
+
+// Equal compares IP prefixes with ipPrefixBytes instead of serializing them,
+// so the two must agree, also for a prefix with bits set past its length.
+func FuzzIPPrefixBytes(f *testing.F) {
+	for _, c := range [][2]string{
+		{"10.0.0.0/24", "10.0.0.0/24"},
+		{"10.0.0.0/24", "10.0.1.0/24"},
+		{"10.0.0.0/24", "10.0.0.0/25"},
+		{"10.0.0.1/24", "10.0.0.2/24"}, // differ past the last octet
+		{"1.1.0.0/3", "3.3.1.1/3"},     // differ in the last octet, past the length
+		{"0.0.0.0/0", "::/0"},
+		{"10.0.0.0/32", "::ffff:10.0.0.0/128"},
+		{"2001:db8::/64", "2001:db8::/64"},
+		{"2001:db8::/64", "2001:db8:0:1::/64"},
+	} {
+		lhs, rhs := netip.MustParsePrefix(c[0]), netip.MustParsePrefix(c[1])
+		f.Add(lhs.Addr().AsSlice(), uint8(lhs.Bits()), rhs.Addr().AsSlice(), uint8(rhs.Bits()))
+	}
+	f.Add([]byte(nil), uint8(0), []byte{0, 0, 0, 0}, uint8(0)) // invalid prefix
+
+	prefix := func(addr []byte, bits uint8) netip.Prefix {
+		a, _ := netip.AddrFromSlice(addr)
+		return netip.PrefixFrom(a, int(bits))
+	}
+	serialize := func(p netip.Prefix) []byte {
+		b, _ := (&bgp.IPAddrPrefix{IPAddrPrefixDefault: bgp.IPAddrPrefixDefault{Prefix: p}}).Serialize()
+		return b
+	}
+	f.Fuzz(func(t *testing.T, lhsAddr []byte, lhsBits uint8, rhsAddr []byte, rhsBits uint8) {
+		lhs, rhs := prefix(lhsAddr, lhsBits), prefix(rhsAddr, rhsBits)
+		want := bytes.Equal(serialize(lhs), serialize(rhs))
+		if got := ipPrefixBytes(lhs) == ipPrefixBytes(rhs); got != want {
+			t.Errorf("%s %s: got %v, want %v", lhs, rhs, got, want)
+		}
 	})
 }
 
@@ -945,4 +993,41 @@ func TestToGlobalPathKeepsRDInKey(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 2, n, "both routes must be in the UPDATE")
+}
+
+func BenchmarkPathEqual(b *testing.B) {
+	newPath := func() *Path {
+		nlri, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("203.0.113.0/24"))
+		nh, _ := bgp.NewPathAttributeNextHop(netip.MustParseAddr("10.0.0.1"))
+		attrs := []bgp.PathAttributeInterface{
+			bgp.NewPathAttributeOrigin(bgp.BGP_ORIGIN_ATTR_TYPE_IGP),
+			bgp.NewPathAttributeAsPath([]bgp.AsPathParamInterface{
+				bgp.NewAs4PathParam(bgp.BGP_ASPATH_ATTR_TYPE_SEQ, []uint32{400, 200, 100}),
+			}),
+			nh,
+			bgp.NewPathAttributeCommunities([]uint32{200<<16 | 50, 100<<16 | 1, 100<<16 | 2}),
+		}
+		return NewPath(bgp.RF_IPv4_UC, nil, bgp.PathNLRI{NLRI: nlri}, false, attrs, time.Now(), false)
+	}
+
+	b.Run("hashes cached", func(b *testing.B) {
+		// paths built by ProcessMessage carry the attributes hash already
+		lhs, rhs := newPath(), newPath()
+		lhs.GetHash()
+		rhs.GetHash()
+		b.ReportAllocs()
+		for range b.N {
+			_ = lhs.Equal(rhs)
+		}
+	})
+
+	b.Run("hashes computed", func(b *testing.B) {
+		lhs, rhs := newPath(), newPath()
+		b.ReportAllocs()
+		for range b.N {
+			lhs.SetHash(0)
+			rhs.SetHash(0)
+			_ = lhs.Equal(rhs)
+		}
+	})
 }
