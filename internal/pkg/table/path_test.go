@@ -942,3 +942,40 @@ func TestToGlobalPathKeepsRDInKey(t *testing.T) {
 	}
 	assert.Equal(t, 2, n, "both routes must be in the UPDATE")
 }
+
+func BenchmarkPathEqual(b *testing.B) {
+	newPath := func() *Path {
+		nlri, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("203.0.113.0/24"))
+		nh, _ := bgp.NewPathAttributeNextHop(netip.MustParseAddr("10.0.0.1"))
+		attrs := []bgp.PathAttributeInterface{
+			bgp.NewPathAttributeOrigin(bgp.BGP_ORIGIN_ATTR_TYPE_IGP),
+			bgp.NewPathAttributeAsPath([]bgp.AsPathParamInterface{
+				bgp.NewAs4PathParam(bgp.BGP_ASPATH_ATTR_TYPE_SEQ, []uint32{400, 200, 100}),
+			}),
+			nh,
+			bgp.NewPathAttributeCommunities([]uint32{200<<16 | 50, 100<<16 | 1, 100<<16 | 2}),
+		}
+		return NewPath(bgp.RF_IPv4_UC, nil, bgp.PathNLRI{NLRI: nlri}, false, attrs, time.Now(), false)
+	}
+
+	b.Run("hashes cached", func(b *testing.B) {
+		// paths built by ProcessMessage carry the attributes hash already
+		lhs, rhs := newPath(), newPath()
+		lhs.GetHash()
+		rhs.GetHash()
+		b.ReportAllocs()
+		for range b.N {
+			_ = lhs.Equal(rhs)
+		}
+	})
+
+	b.Run("hashes computed", func(b *testing.B) {
+		lhs, rhs := newPath(), newPath()
+		b.ReportAllocs()
+		for range b.N {
+			lhs.SetHash(0)
+			rhs.SetHash(0)
+			_ = lhs.Equal(rhs)
+		}
+	})
+}

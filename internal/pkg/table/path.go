@@ -704,6 +704,16 @@ func (path *Path) getPathAttr(typ bgp.BGPAttrType) bgp.PathAttributeInterface {
 	}
 }
 
+// viewPathAttrs returns the same attributes as GetPathAttrs. A path with no
+// parent and no deleted attributes holds them all in pathAttrs, and that slice
+// is returned without a copy, so the caller must not change it.
+func (path *Path) viewPathAttrs() []bgp.PathAttributeInterface {
+	if path.parent == nil && len(path.dels) == 0 {
+		return path.pathAttrs
+	}
+	return path.GetPathAttrs()
+}
+
 func (path *Path) setPathAttr(a bgp.PathAttributeInterface) {
 	path.attrsHash.Store(0)
 	if len(path.pathAttrs) == 0 {
@@ -1221,8 +1231,8 @@ func (lhs *Path) Equal(rhs *Path) bool {
 		return true
 	}
 
-	lhsPathAttrs := lhs.GetPathAttrs()
-	rhsPathAttrs := rhs.GetPathAttrs()
+	lhsPathAttrs := lhs.viewPathAttrs()
+	rhsPathAttrs := rhs.viewPathAttrs()
 	// comparing by length first as it's quite fast (with golang slice)
 	// and easy to know if paths are different
 	if len(lhsPathAttrs) == 0 && len(rhsPathAttrs) == 0 {
