@@ -17,10 +17,12 @@ package table
 
 import (
 	"bytes"
+	"cmp"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -61,6 +63,7 @@ func ProcessMessage(m *bgp.BGPMessage, peerInfo *PeerInfo, timestamp time.Time, 
 	if treatAsWithdraw {
 		attrs = []bgp.PathAttributeInterface{}
 	}
+	normalizeAttrs(attrs)
 
 	// one hash shared by every path of this update; must stay in sync
 	// with Path.updateHash (farm.Hash64 over attrs without MP_REACH_NLRI)
@@ -137,6 +140,32 @@ func ProcessMessage(m *bgp.BGPMessage, peerInfo *PeerInfo, timestamp time.Time, 
 	}
 
 	return pathList
+}
+
+// normalizeAttrs puts the attributes of a received UPDATE in canonical form:
+// sorted by type code, with the COMMUNITIES values sorted. RFC 4271 lets a
+// speaker send attributes in any order and RFC 1997 defines COMMUNITIES as a
+// set, so the same route can arrive encoded differently. In canonical form it
+// gets the same attributes hash, and Path.Equal treats it as unchanged.
+// attrs is sorted in place; a COMMUNITIES attribute that is out of order is
+// replaced by a sorted copy because the original belongs to the message.
+func normalizeAttrs(attrs []bgp.PathAttributeInterface) {
+	byType := func(a, b bgp.PathAttributeInterface) int {
+		return cmp.Compare(a.GetType(), b.GetType())
+	}
+	if !slices.IsSortedFunc(attrs, byType) {
+		slices.SortStableFunc(attrs, byType)
+	}
+	for i, a := range attrs {
+		c, ok := a.(*bgp.PathAttributeCommunities)
+		if !ok || slices.IsSorted(c.Value) {
+			continue
+		}
+		sorted := *c
+		sorted.Value = slices.Clone(c.Value)
+		slices.Sort(sorted.Value)
+		attrs[i] = &sorted
+	}
 }
 
 func makeAttributeList(

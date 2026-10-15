@@ -2660,3 +2660,48 @@ func TestTableManagerSelectionOptionsAreNotShared(t *testing.T) {
 	assert.True(t, multipath.UseMultiplePathsEnabled())
 	assert.False(t, byAge.UseMultiplePathsEnabled())
 }
+
+func TestProcessMessageNormalizesAttrs(t *testing.T) {
+	comm := func(as, value uint16) uint32 { return uint32(as)<<16 | uint32(value) }
+	nlri, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("203.0.113.0/24"))
+	origin := bgp.NewPathAttributeOrigin(bgp.BGP_ORIGIN_ATTR_TYPE_IGP)
+	nh, _ := bgp.NewPathAttributeNextHop(netip.MustParseAddr("10.0.0.2"))
+	newMessage := func(attrs ...bgp.PathAttributeInterface) *bgp.BGPMessage {
+		return bgp.NewBGPUpdateMessage(nil, attrs, []bgp.PathNLRI{{NLRI: nlri}})
+	}
+	receive := func(attrs ...bgp.PathAttributeInterface) *Path {
+		return ProcessMessage(newMessage(attrs...), peerR2(), time.Now(), false)[0]
+	}
+
+	t.Run("communities differ", func(t *testing.T) {
+		lhs := receive(origin, nh, bgp.NewPathAttributeCommunities([]uint32{comm(200, 50)}))
+		rhs := receive(origin, nh, bgp.NewPathAttributeCommunities([]uint32{comm(200, 50), comm(100, 1)}))
+		assert.False(t, lhs.Equal(rhs))
+	})
+
+	t.Run("communities in a different order", func(t *testing.T) {
+		// RFC 1997: COMMUNITIES is a set of four octet values
+		lhs := receive(origin, nh, bgp.NewPathAttributeCommunities([]uint32{comm(200, 50), comm(100, 1)}))
+		rhs := receive(origin, nh, bgp.NewPathAttributeCommunities([]uint32{comm(100, 1), comm(200, 50)}))
+		assert.Equal(t, lhs.GetHash(), rhs.GetHash())
+		assert.True(t, lhs.Equal(rhs))
+	})
+
+	t.Run("path attributes in a different order", func(t *testing.T) {
+		// RFC 4271 section 5: the receiver MUST handle path attributes
+		// that are out of order
+		communities := bgp.NewPathAttributeCommunities([]uint32{comm(200, 50)})
+		lhs := receive(origin, nh, communities)
+		rhs := receive(communities, origin, nh)
+		assert.Equal(t, lhs.GetHash(), rhs.GetHash())
+		assert.True(t, lhs.Equal(rhs))
+	})
+
+	t.Run("message is left unchanged", func(t *testing.T) {
+		communities := bgp.NewPathAttributeCommunities([]uint32{comm(200, 50), comm(100, 1)})
+		msg := newMessage(communities, origin, nh)
+		ProcessMessage(msg, peerR2(), time.Now(), false)
+		assert.Equal(t, []bgp.PathAttributeInterface{communities, origin, nh}, msg.Body.(*bgp.BGPUpdate).PathAttributes)
+		assert.Equal(t, []uint32{comm(200, 50), comm(100, 1)}, communities.Value)
+	})
+}
