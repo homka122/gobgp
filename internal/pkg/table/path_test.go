@@ -596,6 +596,18 @@ func TestPathEqual(t *testing.T) {
 		assert.False(t, ipv4Path(t, nh1).Equal(ipv4Path(t, nh2)))
 	})
 
+	t.Run("IP prefix differs", func(t *testing.T) {
+		attrs := ipv4Path(t, nh1).GetPathAttrs()
+		newPath := func(prefix string) *Path {
+			nlri, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix(prefix))
+			return NewPath(bgp.RF_IPv4_UC, nil, bgp.PathNLRI{NLRI: nlri}, false, attrs, time.Now(), false)
+		}
+		lhs := newPath("10.20.30.0/24")
+		rhs := newPath("10.20.31.0/24")
+		assert.Equal(t, lhs.GetHash(), rhs.GetHash())
+		assert.False(t, lhs.Equal(rhs))
+	})
+
 	t.Run("MP_REACH nexthop differs", func(t *testing.T) {
 		lhs := mupT1stPath(t, teid1, nh1)
 		rhs := mupT1stPath(t, teid1, nh2)

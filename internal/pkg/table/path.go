@@ -1353,6 +1353,11 @@ func (lhs *Path) Equal(rhs *Path) bool {
 	if lhsNlri == nil || rhsNlri == nil {
 		return lhsNlri == nil && rhsNlri == nil
 	}
+	if l, ok := lhsNlri.(*bgp.IPAddrPrefix); ok {
+		if r, ok := rhsNlri.(*bgp.IPAddrPrefix); ok {
+			return l.Prefix == r.Prefix
+		}
+	}
 	lhsNlriBytes, _ := lhsNlri.Serialize()
 	rhsNlriBytes, _ := rhsNlri.Serialize()
 	return bytes.Equal(lhsNlriBytes, rhsNlriBytes)
