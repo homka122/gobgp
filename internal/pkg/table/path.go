@@ -1291,6 +1291,23 @@ func (lhs *Path) EqualBySourceAndPathID(rhs *Path) bool {
 	return lhs.remoteID == rhs.remoteID
 }
 
+// ipPrefixBytes returns the bytes that IPAddrPrefix.Serialize gives for p,
+// zero padded to a fixed size, so that Equal compares two IP prefixes without
+// an allocation.
+func ipPrefixBytes(p netip.Prefix) [17]byte {
+	var b [17]byte
+	b[0] = byte(p.Bits())
+	n := 1 + (p.Bits()+7)/8
+	if p.Addr().Is4() {
+		a := p.Addr().As4()
+		copy(b[1:n], a[:])
+	} else {
+		a := p.Addr().As16()
+		copy(b[1:n], a[:])
+	}
+	return b
+}
+
 func (lhs *Path) Equal(rhs *Path) bool {
 	if rhs == nil {
 		return false
@@ -1352,6 +1369,11 @@ func (lhs *Path) Equal(rhs *Path) bool {
 	lhsNlri, rhsNlri := lhs.GetNlri(), rhs.GetNlri()
 	if lhsNlri == nil || rhsNlri == nil {
 		return lhsNlri == nil && rhsNlri == nil
+	}
+	if l, ok := lhsNlri.(*bgp.IPAddrPrefix); ok {
+		if r, ok := rhsNlri.(*bgp.IPAddrPrefix); ok {
+			return ipPrefixBytes(l.Prefix) == ipPrefixBytes(r.Prefix)
+		}
 	}
 	lhsNlriBytes, _ := lhsNlri.Serialize()
 	rhsNlriBytes, _ := rhsNlri.Serialize()
