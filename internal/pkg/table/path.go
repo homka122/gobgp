@@ -772,6 +772,16 @@ func (path *Path) getPathAttr(typ bgp.BGPAttrType) bgp.PathAttributeInterface {
 	}
 }
 
+// viewPathAttrs returns the same attributes as GetPathAttrs. A path with no
+// parent and no deleted attributes holds them all in pathAttrs, and that slice
+// is returned without a copy, so the caller must not change it.
+func (path *Path) viewPathAttrs() []bgp.PathAttributeInterface {
+	if path.parent == nil && len(path.dels) == 0 {
+		return path.pathAttrs
+	}
+	return path.GetPathAttrs()
+}
+
 func (path *Path) setPathAttr(a bgp.PathAttributeInterface) {
 	path.attrsHash.Store(0)
 	if len(path.pathAttrs) == 0 {
@@ -1281,6 +1291,23 @@ func (lhs *Path) EqualBySourceAndPathID(rhs *Path) bool {
 	return lhs.remoteID == rhs.remoteID
 }
 
+// rdEqual compares two route distinguishers of a known type without
+// serializing them. known is false for any other type.
+func rdEqual(a, b bgp.RouteDistinguisherInterface) (eq, known bool) {
+	switch a := a.(type) {
+	case *bgp.RouteDistinguisherTwoOctetAS:
+		b, ok := b.(*bgp.RouteDistinguisherTwoOctetAS)
+		return ok && *a == *b, true
+	case *bgp.RouteDistinguisherIPAddressAS:
+		b, ok := b.(*bgp.RouteDistinguisherIPAddressAS)
+		return ok && *a == *b, true
+	case *bgp.RouteDistinguisherFourOctetAS:
+		b, ok := b.(*bgp.RouteDistinguisherFourOctetAS)
+		return ok && *a == *b, true
+	}
+	return false, false
+}
+
 func (lhs *Path) Equal(rhs *Path) bool {
 	if rhs == nil {
 		return false
@@ -1289,8 +1316,8 @@ func (lhs *Path) Equal(rhs *Path) bool {
 		return true
 	}
 
-	lhsPathAttrs := lhs.GetPathAttrs()
-	rhsPathAttrs := rhs.GetPathAttrs()
+	lhsPathAttrs := lhs.viewPathAttrs()
+	rhsPathAttrs := rhs.viewPathAttrs()
 	// comparing by length first as it's quite fast (with golang slice)
 	// and easy to know if paths are different
 	if len(lhsPathAttrs) == 0 && len(rhsPathAttrs) == 0 && lhs.nh == nil && rhs.nh == nil {
@@ -1342,6 +1369,18 @@ func (lhs *Path) Equal(rhs *Path) bool {
 	lhsNlri, rhsNlri := lhs.GetNlri(), rhs.GetNlri()
 	if lhsNlri == nil || rhsNlri == nil {
 		return lhsNlri == nil && rhsNlri == nil
+	}
+	if l, ok := lhsNlri.(*bgp.IPAddrPrefix); ok {
+		if r, ok := rhsNlri.(*bgp.IPAddrPrefix); ok {
+			return l.Prefix == r.Prefix
+		}
+	}
+	if l, ok := lhsNlri.(*bgp.LabeledVPNIPAddrPrefix); ok {
+		if r, ok := rhsNlri.(*bgp.LabeledVPNIPAddrPrefix); ok {
+			if eq, known := rdEqual(l.RD, r.RD); known {
+				return eq && l.Prefix == r.Prefix && slices.Equal(l.Labels.Labels, r.Labels.Labels)
+			}
+		}
 	}
 	lhsNlriBytes, _ := lhsNlri.Serialize()
 	rhsNlriBytes, _ := rhsNlri.Serialize()
