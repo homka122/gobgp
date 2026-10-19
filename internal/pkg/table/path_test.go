@@ -608,6 +608,32 @@ func TestPathEqual(t *testing.T) {
 		assert.False(t, lhs.Equal(rhs))
 	})
 
+	t.Run("VPN prefix", func(t *testing.T) {
+		attrs := ipv4Path(t, nh1).GetPathAttrs()
+		newPath := func(rd bgp.RouteDistinguisherInterface, label uint32, prefix string) *Path {
+			nlri, _ := bgp.NewLabeledVPNIPAddrPrefix(netip.MustParsePrefix(prefix), *bgp.NewMPLSLabelStack(label), rd)
+			return NewPath(bgp.RF_IPv4_VPN, nil, bgp.PathNLRI{NLRI: nlri}, false, attrs, time.Now(), false)
+		}
+		lhs := newPath(bgp.NewRouteDistinguisherTwoOctetAS(65000, 1), 100, "10.20.30.0/24")
+		for _, c := range []struct {
+			name  string
+			rhs   *Path
+			equal bool
+		}{
+			{"same", newPath(bgp.NewRouteDistinguisherTwoOctetAS(65000, 1), 100, "10.20.30.0/24"), true},
+			{"label differs", newPath(bgp.NewRouteDistinguisherTwoOctetAS(65000, 1), 200, "10.20.30.0/24"), false},
+			{"RD differs", newPath(bgp.NewRouteDistinguisherTwoOctetAS(65000, 2), 100, "10.20.30.0/24"), false},
+			{"RD type differs", newPath(bgp.NewRouteDistinguisherFourOctetAS(65000, 1), 100, "10.20.30.0/24"), false},
+			{"prefix differs", newPath(bgp.NewRouteDistinguisherTwoOctetAS(65000, 1), 100, "10.20.31.0/24"), false},
+			{"prefix length differs", newPath(bgp.NewRouteDistinguisherTwoOctetAS(65000, 1), 100, "10.20.30.0/25"), false},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				assert.Equal(t, lhs.GetHash(), c.rhs.GetHash())
+				assert.Equal(t, c.equal, lhs.Equal(c.rhs))
+			})
+		}
+	})
+
 	t.Run("MP_REACH nexthop differs", func(t *testing.T) {
 		lhs := mupT1stPath(t, teid1, nh1)
 		rhs := mupT1stPath(t, teid1, nh2)

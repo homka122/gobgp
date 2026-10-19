@@ -1291,6 +1291,23 @@ func (lhs *Path) EqualBySourceAndPathID(rhs *Path) bool {
 	return lhs.remoteID == rhs.remoteID
 }
 
+// rdEqual compares two route distinguishers of a known type without
+// serializing them. known is false for any other type.
+func rdEqual(a, b bgp.RouteDistinguisherInterface) (eq, known bool) {
+	switch a := a.(type) {
+	case *bgp.RouteDistinguisherTwoOctetAS:
+		b, ok := b.(*bgp.RouteDistinguisherTwoOctetAS)
+		return ok && *a == *b, true
+	case *bgp.RouteDistinguisherIPAddressAS:
+		b, ok := b.(*bgp.RouteDistinguisherIPAddressAS)
+		return ok && *a == *b, true
+	case *bgp.RouteDistinguisherFourOctetAS:
+		b, ok := b.(*bgp.RouteDistinguisherFourOctetAS)
+		return ok && *a == *b, true
+	}
+	return false, false
+}
+
 func (lhs *Path) Equal(rhs *Path) bool {
 	if rhs == nil {
 		return false
@@ -1356,6 +1373,13 @@ func (lhs *Path) Equal(rhs *Path) bool {
 	if l, ok := lhsNlri.(*bgp.IPAddrPrefix); ok {
 		if r, ok := rhsNlri.(*bgp.IPAddrPrefix); ok {
 			return l.Prefix == r.Prefix
+		}
+	}
+	if l, ok := lhsNlri.(*bgp.LabeledVPNIPAddrPrefix); ok {
+		if r, ok := rhsNlri.(*bgp.LabeledVPNIPAddrPrefix); ok {
+			if eq, known := rdEqual(l.RD, r.RD); known {
+				return eq && l.Prefix == r.Prefix && slices.Equal(l.Labels.Labels, r.Labels.Labels)
+			}
 		}
 	}
 	lhsNlriBytes, _ := lhsNlri.Serialize()
