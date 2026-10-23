@@ -20,6 +20,7 @@ import (
 	"io"
 	"net/netip"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -206,6 +207,91 @@ func TestMonitorPrintsPathIdentifierForAdjIn(t *testing.T) {
 				require.NoError(t, command.Execute())
 			})
 			assert.Contains(t, out, tt.want)
+		})
+	}
+}
+
+func TestMonitorNeighbor(t *testing.T) {
+	numbered := &api.Peer{
+		Conf:  &api.PeerConf{NeighborAddress: "10.0.0.2"},
+		State: &api.PeerState{NeighborAddress: "10.0.0.2", SessionState: api.PeerState_SESSION_STATE_ESTABLISHED},
+	}
+	unnumbered := &api.Peer{
+		Conf:  &api.PeerConf{NeighborInterface: "eth0"},
+		State: &api.PeerState{NeighborAddress: "fe80::1", SessionState: api.PeerState_SESSION_STATE_ESTABLISHED},
+	}
+	numberedDown := &api.Peer{
+		Conf:  numbered.Conf,
+		State: &api.PeerState{NeighborAddress: "10.0.0.2", SessionState: api.PeerState_SESSION_STATE_IDLE},
+	}
+	peerEvent := func(typ api.WatchEventResponse_PeerEvent_Type, p *api.Peer) *api.WatchEventResponse {
+		return &api.WatchEventResponse{
+			Event: &api.WatchEventResponse_Peer{
+				Peer: &api.WatchEventResponse_PeerEvent{Type: typ, Peer: p},
+			},
+		}
+	}
+	// What the server sends: a snapshot of every neighbor, the end marker
+	// without a peer, then live state changes.
+	replies := []*api.WatchEventResponse{
+		peerEvent(api.WatchEventResponse_PeerEvent_TYPE_INIT, numbered),
+		peerEvent(api.WatchEventResponse_PeerEvent_TYPE_INIT, unnumbered),
+		peerEvent(api.WatchEventResponse_PeerEvent_TYPE_END_OF_INIT, nil),
+		peerEvent(api.WatchEventResponse_PeerEvent_TYPE_STATE, numberedDown),
+		peerEvent(api.WatchEventResponse_PeerEvent_TYPE_STATE, unnumbered),
+	}
+
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{
+			name: "all neighbors, live events only",
+			args: []string{"neighbor"},
+			want: []string{
+				"[NEIGH] 10.0.0.2 fsm: SESSION_STATE_IDLE",
+				"[NEIGH] fe80::1(eth0) fsm: SESSION_STATE_ESTABLISHED",
+			},
+		},
+		{
+			name: "all neighbors with the current snapshot",
+			args: []string{"neighbor", "--current"},
+			want: []string{
+				"[NEIGH] 10.0.0.2 fsm: SESSION_STATE_ESTABLISHED",
+				"[NEIGH] fe80::1(eth0) fsm: SESSION_STATE_ESTABLISHED",
+				"[NEIGH] 10.0.0.2 fsm: SESSION_STATE_IDLE",
+				"[NEIGH] fe80::1(eth0) fsm: SESSION_STATE_ESTABLISHED",
+			},
+		},
+		{
+			name: "one neighbor by address",
+			args: []string{"neighbor", "10.0.0.2"},
+			want: []string{"[NEIGH] 10.0.0.2 fsm: SESSION_STATE_IDLE"},
+		},
+		{
+			name: "one neighbor by interface with the current snapshot",
+			args: []string{"neighbor", "eth0", "--current"},
+			want: []string{
+				"[NEIGH] fe80::1(eth0) fsm: SESSION_STATE_ESTABLISHED",
+				"[NEIGH] fe80::1(eth0) fsm: SESSION_STATE_ESTABLISHED",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := newTestMonitorClient(t, numbered, unnumbered)
+			fake.watchReplies = replies
+			command := newMonitorCmd()
+			command.SetArgs(tt.args)
+			out := captureStdout(t, func() {
+				require.NoError(t, command.Execute())
+			})
+			lines := strings.Split(strings.TrimSpace(out), "\n")
+			require.Len(t, lines, len(tt.want), out)
+			for i, want := range tt.want {
+				assert.Contains(t, lines[i], want)
+			}
 		})
 	}
 }

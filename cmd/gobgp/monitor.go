@@ -166,9 +166,10 @@ func newMonitorCmd() *cobra.Command {
 		Use:  fmt.Sprintf("%s [<neighbor address>]", cmdNeighbor),
 		Args: cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
-			name := ""
+			// An empty peerAddress monitors every neighbor.
+			peerAddress := ""
 			if len(args) > 0 {
-				name = args[0]
+				peerAddress = neighborAddress(args[0])
 			}
 			stream, err := client.WatchEvent(ctx, &api.WatchEventRequest{
 				Peer: &api.WatchEventRequest_Peer{},
@@ -183,19 +184,27 @@ func newMonitorCmd() *cobra.Command {
 				} else if err != nil {
 					exitWithError(err)
 				}
-				if p := r.GetPeer(); p != nil && p.Type == api.WatchEventResponse_PeerEvent_TYPE_STATE {
+				p := r.GetPeer()
+				if p == nil {
+					continue
+				}
+				// Live changes, plus the snapshot the server always sends
+				// first (TYPE_INIT) when asked to. TYPE_END_OF_INIT carries
+				// no peer.
+				if p.Type == api.WatchEventResponse_PeerEvent_TYPE_STATE || p.Type == api.WatchEventResponse_PeerEvent_TYPE_INIT && current {
 					s := p.Peer
-					if s.Conf.NeighborAddress == name {
-						if globalOpts.Json {
-							j, _ := json.Marshal(s)
-							fmt.Println(string(j))
-						} else {
-							addr := s.Conf.NeighborAddress
-							if s.Conf.NeighborInterface != "" {
-								addr = fmt.Sprintf("%s(%s)", addr, s.Conf.NeighborInterface)
-							}
-							fmt.Printf("%s [NEIGH] %s fsm: %s admin: %s\n", time.Now().UTC().Format(time.RFC3339), addr, s.State.SessionState, s.State.AdminState)
+					if peerAddress != "" && s.State.NeighborAddress != peerAddress {
+						continue
+					}
+					if globalOpts.Json {
+						j, _ := json.Marshal(s)
+						fmt.Println(string(j))
+					} else {
+						addr := s.State.NeighborAddress
+						if s.Conf.NeighborInterface != "" {
+							addr = fmt.Sprintf("%s(%s)", addr, s.Conf.NeighborInterface)
 						}
+						fmt.Printf("%s [NEIGH] %s fsm: %s admin: %s\n", time.Now().UTC().Format(time.RFC3339), addr, s.State.SessionState, s.State.AdminState)
 					}
 				}
 			}
