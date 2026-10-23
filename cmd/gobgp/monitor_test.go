@@ -142,12 +142,23 @@ func TestMonitorAdjInRequest(t *testing.T) {
 	}
 }
 
-func TestMonitorAdjInRejectsExtraArgs(t *testing.T) {
-	fake := newTestMonitorClient(t)
-	command := newMonitorCmd()
-	command.SetArgs([]string{"adj-in", "10.0.0.2", "10.0.0.3"})
-	command.SetOut(io.Discard)
-	command.SetErr(io.Discard)
-	require.Error(t, command.Execute())
-	assert.Nil(t, fake.watchEvent)
+func TestMonitorRejectsExtraArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "adj-in takes one address", args: []string{"adj-in", "10.0.0.2", "10.0.0.3"}},
+		{name: "global rib takes none", args: []string{"global", "rib", "10.0.0.2"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := newTestMonitorClient(t)
+			command := newMonitorCmd()
+			command.SetArgs(tt.args)
+			command.SetOut(io.Discard)
+			command.SetErr(io.Discard)
+			require.Error(t, command.Execute())
+			assert.Nil(t, fake.watchEvent)
+		})
+	}
 }

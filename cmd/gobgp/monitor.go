@@ -131,7 +131,8 @@ func newMonitorCmd() *cobra.Command {
 	}
 
 	ribCmd := &cobra.Command{
-		Use: cmdRib,
+		Use:  cmdRib,
+		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			_, err := checkAddressFamily(ipv4UC)
 			if err != nil {
