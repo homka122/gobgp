@@ -19,7 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
+	"net/netip"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -94,6 +94,19 @@ func monitorRoute(pathList []*api.Path, showIdentifier bgp.BGPAddPathMode) {
 func newMonitorCmd() *cobra.Command {
 	var current bool
 	var batchSize uint32
+
+	// An address is taken as is, so a neighbor that is not configured yet can
+	// be monitored; an interface name is resolved to the session address.
+	neighborAddress := func(arg string) string {
+		if addr, err := netip.ParseAddr(arg); err == nil {
+			return addr.String()
+		}
+		l, err := getNeighbors(arg, false)
+		if err != nil {
+			exitWithError(err)
+		}
+		return l[0].State.NeighborAddress
+	}
 
 	monitor := func(recver interface {
 		Recv() (*api.WatchEventResponse, error)
@@ -189,13 +202,12 @@ func newMonitorCmd() *cobra.Command {
 	}
 
 	adjInCmd := &cobra.Command{
-		Use: cmdAdjIn,
+		Use:  fmt.Sprintf("%s [<neighbor address>]", cmdAdjIn),
+		Args: cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
+			peerAddress := ""
 			if len(args) > 0 {
-				remoteIP := net.ParseIP(args[0])
-				if remoteIP == nil {
-					exitWithError(fmt.Errorf("invalid ip address: %s", args[0]))
-				}
+				peerAddress = neighborAddress(args[0])
 			}
 			_, err := checkAddressFamily(ipv4UC)
 			if err != nil {
@@ -205,11 +217,13 @@ func newMonitorCmd() *cobra.Command {
 				Table: &api.WatchEventRequest_Table{
 					Filters: []*api.WatchEventRequest_Table_Filter{
 						{
-							Type: api.WatchEventRequest_Table_Filter_TYPE_ADJIN,
-							Init: current,
+							Type:        api.WatchEventRequest_Table_Filter_TYPE_ADJIN,
+							Init:        current,
+							PeerAddress: peerAddress,
 						},
 					},
 				},
+				BatchSize: batchSize,
 			})
 			if err != nil {
 				exitWithError(err)
