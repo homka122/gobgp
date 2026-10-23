@@ -18,13 +18,18 @@ package main
 import (
 	"context"
 	"io"
+	"net/netip"
+	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 
 	"github.com/osrg/gobgp/v4/api"
+	"github.com/osrg/gobgp/v4/pkg/apiutil"
+	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 )
 
 // sliceStream replays the given responses and then reports io.EOF.
@@ -138,6 +143,69 @@ func TestMonitorAdjInRequest(t *testing.T) {
 			assert.Equal(t, tt.peerAddress, filter.PeerAddress)
 			assert.Equal(t, tt.init, filter.Init)
 			assert.Equal(t, tt.batchSize, fake.watchEvent.BatchSize)
+		})
+	}
+}
+
+// captureStdout runs fn and returns what it printed to os.Stdout.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	previous := os.Stdout
+	os.Stdout = w
+	// Also runs when fn fails the test, so the reader does not hang.
+	defer func() {
+		os.Stdout = previous
+		w.Close()
+	}()
+
+	done := make(chan string, 1)
+	go func() {
+		b, _ := io.ReadAll(r)
+		r.Close()
+		done <- string(b)
+	}()
+	fn()
+	require.NoError(t, w.Close())
+	return <-done
+}
+
+func TestMonitorPrintsPathIdentifierForAdjIn(t *testing.T) {
+	nlri, err := bgp.NewIPAddrPrefix(netip.MustParsePrefix("10.2.0.0/24"))
+	require.NoError(t, err)
+	nexthop, err := bgp.NewPathAttributeNextHop(netip.MustParseAddr("192.0.2.1"))
+	require.NoError(t, err)
+	path, err := apiutil.NewPath(bgp.RF_IPv4_UC, nlri, false, []bgp.PathAttributeInterface{
+		bgp.NewPathAttributeOrigin(bgp.BGP_ORIGIN_ATTR_TYPE_IGP),
+		nexthop,
+	}, time.Now())
+	require.NoError(t, err)
+	path.Identifier = 2
+	event := &api.WatchEventResponse{
+		Event: &api.WatchEventResponse_Table{
+			Table: &api.WatchEventResponse_TableEvent{Paths: []*api.Path{path}},
+		},
+	}
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "adj-in shows the identifier", args: []string{"adj-in"}, want: " [ROUTE] 2:10.2.0.0/24 via 192.0.2.1 "},
+		{name: "global rib does not", args: []string{"global", "rib"}, want: " [ROUTE] 10.2.0.0/24 via 192.0.2.1 "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := newTestMonitorClient(t)
+			fake.watchReplies = []*api.WatchEventResponse{event}
+			command := newMonitorCmd()
+			command.SetArgs(tt.args)
+			out := captureStdout(t, func() {
+				require.NoError(t, command.Execute())
+			})
+			assert.Contains(t, out, tt.want)
 		})
 	}
 }

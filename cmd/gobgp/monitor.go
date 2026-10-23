@@ -124,7 +124,7 @@ func newMonitorCmd() *cobra.Command {
 					j, _ := json.Marshal(apiutil.NewDestination(&api.Destination{Paths: t.Paths}))
 					fmt.Println(string(j))
 				} else {
-					monitorRoute(t.Paths, bgp.BGP_ADD_PATH_NONE)
+					monitorRoute(t.Paths, showIdentifier)
 				}
 			}
 		}
