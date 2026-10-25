@@ -108,9 +108,10 @@ func newMonitorCmd() *cobra.Command {
 		return l[0].State.NeighborAddress
 	}
 
+	// With an older gobgpd the CLI filters by family itself.
 	monitor := func(recver interface {
 		Recv() (*api.WatchEventResponse, error)
-	}, showIdentifier bgp.BGPAddPathMode,
+	}, showIdentifier bgp.BGPAddPathMode, family *api.Family,
 	) {
 		for {
 			r, err := recver.Recv()
@@ -119,13 +120,27 @@ func newMonitorCmd() *cobra.Command {
 			} else if err != nil {
 				exitWithError(err)
 			}
-			if t := r.GetTable(); t != nil {
-				if globalOpts.Json {
-					j, _ := json.Marshal(apiutil.NewDestination(&api.Destination{Paths: t.Paths}))
-					fmt.Println(string(j))
-				} else {
-					monitorRoute(t.Paths, showIdentifier)
+			t := r.GetTable()
+			if t == nil {
+				continue
+			}
+			paths := t.Paths
+			if family != nil {
+				paths = make([]*api.Path, 0, len(t.Paths))
+				for _, p := range t.Paths {
+					if p.Family.GetAfi() == family.Afi && p.Family.GetSafi() == family.Safi {
+						paths = append(paths, p)
+					}
 				}
+			}
+			if len(paths) == 0 {
+				continue
+			}
+			if globalOpts.Json {
+				j, _ := json.Marshal(apiutil.NewDestination(&api.Destination{Paths: paths}))
+				fmt.Println(string(j))
+			} else {
+				monitorRoute(paths, showIdentifier)
 			}
 		}
 	}
@@ -134,7 +149,7 @@ func newMonitorCmd() *cobra.Command {
 		Use:  cmdRib,
 		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
-			_, err := checkAddressFamily(ipv4UC)
+			family, err := checkAddressFamily(nil)
 			if err != nil {
 				exitWithError(err)
 			}
@@ -148,11 +163,12 @@ func newMonitorCmd() *cobra.Command {
 					},
 				},
 				BatchSize: batchSize,
+				Family:    family,
 			})
 			if err != nil {
 				exitWithError(err)
 			}
-			monitor(recver, bgp.BGP_ADD_PATH_NONE)
+			monitor(recver, bgp.BGP_ADD_PATH_NONE, family)
 		},
 	}
 	ribCmd.PersistentFlags().StringVarP(&subOpts.AddressFamily, "address-family", "a", "", "address family")
@@ -219,7 +235,7 @@ func newMonitorCmd() *cobra.Command {
 			if len(args) > 0 {
 				peerAddress = neighborAddress(args[0])
 			}
-			_, err := checkAddressFamily(ipv4UC)
+			family, err := checkAddressFamily(nil)
 			if err != nil {
 				exitWithError(err)
 			}
@@ -234,11 +250,12 @@ func newMonitorCmd() *cobra.Command {
 					},
 				},
 				BatchSize: batchSize,
+				Family:    family,
 			})
 			if err != nil {
 				exitWithError(err)
 			}
-			monitor(recver, bgp.BGP_ADD_PATH_RECEIVE)
+			monitor(recver, bgp.BGP_ADD_PATH_RECEIVE, family)
 		},
 	}
 	adjInCmd.PersistentFlags().StringVarP(&subOpts.AddressFamily, "address-family", "a", "", "address family")

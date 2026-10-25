@@ -155,6 +155,9 @@ message WatchEventRequest {
 
   // Max number of paths to include in a single message. 0 for unlimited.
   uint32 batch_size = 3;
+
+  // Send only the paths of this address family. Unset means every family.
+  Family family = 4;
 }
 
 message WatchEventResponse {

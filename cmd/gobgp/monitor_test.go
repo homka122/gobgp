@@ -296,6 +296,84 @@ func TestMonitorNeighbor(t *testing.T) {
 	}
 }
 
+func TestMonitorAddressFamily(t *testing.T) {
+	newPath := func(prefix, nexthop string, family bgp.Family) *api.Path {
+		nlri, err := bgp.NewIPAddrPrefix(netip.MustParsePrefix(prefix))
+		require.NoError(t, err)
+		nh, err := bgp.NewPathAttributeMpReachNLRI(family, []bgp.PathNLRI{{NLRI: nlri}}, netip.MustParseAddr(nexthop))
+		require.NoError(t, err)
+		path, err := apiutil.NewPath(family, nlri, false, []bgp.PathAttributeInterface{
+			bgp.NewPathAttributeOrigin(bgp.BGP_ORIGIN_ATTR_TYPE_IGP),
+			nh,
+		}, time.Now())
+		require.NoError(t, err)
+		return path
+	}
+	// An event with both families, as sent by a gobgpd that ignores the
+	// family field.
+	event := &api.WatchEventResponse{
+		Event: &api.WatchEventResponse_Table{
+			Table: &api.WatchEventResponse_TableEvent{Paths: []*api.Path{
+				newPath("10.2.0.0/24", "192.0.2.1", bgp.RF_IPv4_UC),
+				newPath("2001:db8::/32", "2001:db8::1", bgp.RF_IPv6_UC),
+			}},
+		},
+	}
+
+	tests := []struct {
+		name       string
+		args       []string
+		wantFamily *api.Family
+		wantLines  []string
+	}{
+		{
+			name:      "global rib without -a shows every family",
+			args:      []string{"global", "rib"},
+			wantLines: []string{"10.2.0.0/24 via 192.0.2.1", "2001:db8::/32 via 2001:db8::1"},
+		},
+		{
+			name:       "global rib -a ipv6",
+			args:       []string{"global", "rib", "-a", "ipv6"},
+			wantFamily: ipv6UC,
+			wantLines:  []string{"2001:db8::/32 via 2001:db8::1"},
+		},
+		{
+			name:      "adj-in without -a shows every family",
+			args:      []string{"adj-in"},
+			wantLines: []string{"10.2.0.0/24 via 192.0.2.1", "2001:db8::/32 via 2001:db8::1"},
+		},
+		{
+			name:       "adj-in -a ipv4",
+			args:       []string{"adj-in", "-a", "ipv4"},
+			wantFamily: ipv4UC,
+			wantLines:  []string{"10.2.0.0/24 via 192.0.2.1"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// The -a flag is parsed into this global; newMonitorCmd resets it.
+			previousFamily := subOpts.AddressFamily
+			t.Cleanup(func() { subOpts.AddressFamily = previousFamily })
+			fake := newTestMonitorClient(t)
+			fake.watchReplies = []*api.WatchEventResponse{event}
+			command := newMonitorCmd()
+			command.SetArgs(tt.args)
+			out := captureStdout(t, func() {
+				require.NoError(t, command.Execute())
+			})
+
+			require.NotNil(t, fake.watchEvent)
+			assert.Equal(t, tt.wantFamily, fake.watchEvent.Family)
+
+			lines := strings.Split(strings.TrimSpace(out), "\n")
+			require.Len(t, lines, len(tt.wantLines), out)
+			for i, want := range tt.wantLines {
+				assert.Contains(t, lines[i], want)
+			}
+		})
+	}
+}
+
 func TestMonitorRejectsExtraArgs(t *testing.T) {
 	tests := []struct {
 		name string

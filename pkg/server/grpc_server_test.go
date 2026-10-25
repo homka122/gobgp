@@ -1042,3 +1042,171 @@ func TestGRPCListPolicyAndListStatementAgree(t *testing.T) {
 		}
 	}
 }
+
+// TestGRPCWatchEventFamily checks that WatchEvent sends only the paths of the
+// requested address family, and every family when none is requested.
+func TestGRPCWatchEventFamily(t *testing.T) {
+	s := NewBgpServer()
+	go s.Serve()
+	defer s.Stop()
+
+	err := s.StartBgp(context.Background(), &api.StartBgpRequest{
+		Global: &api.Global{
+			Asn:        1,
+			RouterId:   "1.1.1.1",
+			ListenPort: -1,
+		},
+	})
+	require.NoError(t, err)
+
+	origin := bgp.NewPathAttributeOrigin(0)
+
+	prefix4, err := bgp.NewIPAddrPrefix(netip.MustParsePrefix("10.1.0.0/24"))
+	require.NoError(t, err)
+	nexthop4, err := bgp.NewPathAttributeNextHop(netip.MustParseAddr("10.0.0.1"))
+	require.NoError(t, err)
+	_, err = s.AddPath(apiutil.AddPathRequest{
+		Paths: []*apiutil.Path{mustApi2apiutilPath(&api.Path{
+			Family: &api.Family{Afi: api.Family_AFI_IP, Safi: api.Family_SAFI_UNICAST},
+			Nlri:   nlri(prefix4),
+			Pattrs: attrs([]bgp.PathAttributeInterface{origin, nexthop4}),
+		})},
+	})
+	require.NoError(t, err)
+
+	prefix6, err := bgp.NewIPAddrPrefix(netip.MustParsePrefix("2001:db8::/32"))
+	require.NoError(t, err)
+	reach6, err := bgp.NewPathAttributeMpReachNLRI(bgp.RF_IPv6_UC, []bgp.PathNLRI{{NLRI: prefix6}}, netip.MustParseAddr("2001:db8::1"))
+	require.NoError(t, err)
+	_, err = s.AddPath(apiutil.AddPathRequest{
+		Paths: []*apiutil.Path{mustApi2apiutilPath(&api.Path{
+			Family: &api.Family{Afi: api.Family_AFI_IP6, Safi: api.Family_SAFI_UNICAST},
+			Nlri:   nlri(prefix6),
+			Pattrs: attrs([]bgp.PathAttributeInterface{origin, reach6}),
+		})},
+	})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name   string
+		family *api.Family
+		want   []string
+	}{
+		{
+			name: "every family",
+			want: []string{"10.1.0.0/24", "2001:db8::/32"},
+		},
+		{
+			name:   "ipv4 only",
+			family: &api.Family{Afi: api.Family_AFI_IP, Safi: api.Family_SAFI_UNICAST},
+			want:   []string{"10.1.0.0/24"},
+		},
+		{
+			name:   "ipv6 only",
+			family: &api.Family{Afi: api.Family_AFI_IP6, Safi: api.Family_SAFI_UNICAST},
+			want:   []string{"2001:db8::/32"},
+		},
+	}
+	apiServer := &server{bgpServer: s}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			responses := make(chan *api.WatchEventResponse, 16)
+			err := apiServer.watchEvent(ctx, &api.WatchEventRequest{
+				Table: &api.WatchEventRequest_Table{
+					Filters: []*api.WatchEventRequest_Table_Filter{{
+						Type: api.WatchEventRequest_Table_Filter_TYPE_BEST,
+						Init: true,
+					}},
+				},
+				Family: tt.family,
+			}, func(r *api.WatchEventResponse, _ time.Time) {
+				responses <- r
+			})
+			require.NoError(t, err)
+
+			got := make([]string, 0, len(tt.want))
+			timeout := time.After(5 * time.Second)
+			for len(got) < len(tt.want) {
+				select {
+				case r := <-responses:
+					for _, p := range r.GetTable().GetPaths() {
+						n, err := apiutil.GetNativeNlri(p)
+						require.NoError(t, err)
+						got = append(got, n.String())
+					}
+				case <-timeout:
+					t.Fatalf("timed out waiting for %v, got %v", tt.want, got)
+				}
+			}
+			assert.ElementsMatch(t, tt.want, got)
+
+			// The initial dump is a single event.
+			select {
+			case r := <-responses:
+				t.Fatalf("unexpected extra event: %v", r)
+			case <-time.After(200 * time.Millisecond):
+			}
+		})
+	}
+
+	// Updates: an event keeps only the paths of the requested family and is
+	// still sent when none is left.
+	t.Run("ipv4 only, updates", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		responses := make(chan *api.WatchEventResponse, 16)
+		err := apiServer.watchEvent(ctx, &api.WatchEventRequest{
+			Table: &api.WatchEventRequest_Table{
+				Filters: []*api.WatchEventRequest_Table_Filter{{
+					Type: api.WatchEventRequest_Table_Filter_TYPE_BEST,
+				}},
+			},
+			Family: &api.Family{Afi: api.Family_AFI_IP, Safi: api.Family_SAFI_UNICAST},
+		}, func(r *api.WatchEventResponse, _ time.Time) {
+			responses <- r
+		})
+		require.NoError(t, err)
+
+		recv := func() []*api.Path {
+			select {
+			case r := <-responses:
+				return r.GetTable().GetPaths()
+			case <-time.After(5 * time.Second):
+				t.Fatal("timed out waiting for an event")
+				return nil
+			}
+		}
+
+		prefix6, err := bgp.NewIPAddrPrefix(netip.MustParsePrefix("2001:db8:1::/48"))
+		require.NoError(t, err)
+		reach6, err := bgp.NewPathAttributeMpReachNLRI(bgp.RF_IPv6_UC, []bgp.PathNLRI{{NLRI: prefix6}}, netip.MustParseAddr("2001:db8::1"))
+		require.NoError(t, err)
+		_, err = s.AddPath(apiutil.AddPathRequest{
+			Paths: []*apiutil.Path{mustApi2apiutilPath(&api.Path{
+				Family: &api.Family{Afi: api.Family_AFI_IP6, Safi: api.Family_SAFI_UNICAST},
+				Nlri:   nlri(prefix6),
+				Pattrs: attrs([]bgp.PathAttributeInterface{origin, reach6}),
+			})},
+		})
+		require.NoError(t, err)
+		assert.Empty(t, recv())
+
+		prefix4, err := bgp.NewIPAddrPrefix(netip.MustParsePrefix("10.2.0.0/24"))
+		require.NoError(t, err)
+		_, err = s.AddPath(apiutil.AddPathRequest{
+			Paths: []*apiutil.Path{mustApi2apiutilPath(&api.Path{
+				Family: &api.Family{Afi: api.Family_AFI_IP, Safi: api.Family_SAFI_UNICAST},
+				Nlri:   nlri(prefix4),
+				Pattrs: attrs([]bgp.PathAttributeInterface{origin, nexthop4}),
+			})},
+		})
+		require.NoError(t, err)
+		paths := recv()
+		require.Len(t, paths, 1)
+		n, err := apiutil.GetNativeNlri(paths[0])
+		require.NoError(t, err)
+		assert.Equal(t, "10.2.0.0/24", n.String())
+	})
+}

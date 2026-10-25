@@ -382,6 +382,12 @@ func (s *server) watchEvent(ctx context.Context, r *api.WatchEventRequest, fn fu
 	if len(opts) == 0 {
 		return status.Errorf(codes.InvalidArgument, "no events to watch")
 	}
+	// Requested address family; zero means every family. An event may mix
+	// families, so paths are filtered one by one.
+	var family bgp.Family
+	if r.Family != nil {
+		family = apiutil.ToFamily(r.Family)
+	}
 	simpleSend := func(paths []*api.Path, when time.Time) {
 		fn(&api.WatchEventResponse{Event: &api.WatchEventResponse_Table{Table: &api.WatchEventResponse_TableEvent{Paths: paths}}}, when)
 	}
@@ -389,6 +395,9 @@ func (s *server) watchEvent(ctx context.Context, r *api.WatchEventRequest, fn fu
 		OnPathUpdate: func(pathList []*apiutil.Path, timestamp time.Time) {
 			paths := make([]*api.Path, 0, r.BatchSize)
 			for _, path := range pathList {
+				if family != 0 && path.Family != family {
+					continue
+				}
 				paths = append(paths, toPathApi(path, false, false, false))
 				if r.BatchSize > 0 && len(paths) > int(r.BatchSize) {
 					simpleSend(paths, timestamp)
@@ -400,6 +409,9 @@ func (s *server) watchEvent(ctx context.Context, r *api.WatchEventRequest, fn fu
 		OnBestPath: func(pathList []*apiutil.Path, timestamp time.Time) {
 			pl := make([]*api.Path, 0, r.BatchSize)
 			for _, path := range pathList {
+				if family != 0 && path.Family != family {
+					continue
+				}
 				pl = append(pl, toPathApi(path, false, false, false))
 				if r.BatchSize > 0 && len(pl) > int(r.BatchSize) {
 					simpleSend(pl, timestamp)
@@ -409,6 +421,9 @@ func (s *server) watchEvent(ctx context.Context, r *api.WatchEventRequest, fn fu
 			simpleSend(pl, timestamp)
 		},
 		OnPathEor: func(path *apiutil.Path, timestamp time.Time) {
+			if family != 0 && path.Family != family {
+				return
+			}
 			p := toPathApi(path, false, false, false)
 			simpleSend([]*api.Path{p}, timestamp)
 		},
