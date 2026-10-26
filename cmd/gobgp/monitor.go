@@ -132,9 +132,9 @@ func newMonitorCmd() *cobra.Command {
 						paths = append(paths, p)
 					}
 				}
-			}
-			if len(paths) == 0 {
-				continue
+				if len(paths) == 0 {
+					continue
+				}
 			}
 			if globalOpts.Json {
 				j, _ := json.Marshal(apiutil.NewDestination(&api.Destination{Paths: paths}))
